@@ -35,10 +35,8 @@ JSON output
 -----------
 A successful run will produce the following output in the JSONBackupBucket:
 
-monitors/
-	monitors_all.json
-screenboards/
-	individual screenboard JSON files in $ID_$TITLE.json format
-timeboards/
-	individual timeboard JSON files in $ID_$TITLE.json format
+:---|:---
+monitors|monitors_all.json
+screenboards|individual screenboard JSON files in $ID_$TITLE.json format
+timeboards|individual timeboard JSON files in $ID_$TITLE.json format
 
