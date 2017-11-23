@@ -1,0 +1,270 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Lambda function to backup Datadog dashboards, monitors and screenboards via direct Datadog API calls on a scheduled basis",
+  "Parameters": {
+    "DatadogKey": {
+      "Type": "String",
+      "Description": "KMS encrypted Datadog API and app keys in JSON format: {\"api_key\":\"123...\", \"app_key\":\"123...\"} Add this after stack creation and KMS encrypt the parameter in the Lambda function console.",
+      "NoEcho": true
+    },
+    "JSONBackupBucket": {
+      "Type": "String",
+      "Description": "S3 bucket to output JSON files"
+    },
+    "SourceBucket": {
+      "Type": "String",
+      "Description": "S3 bucket containing source .zip file"
+    },
+    "LambdaFilename": {
+      "Type": "String",
+      "Description": "Name of Lambda .zip file"
+    },
+    "LambdaMainHandler": {
+      "Type": "String",
+      "Description": "Name of Lambda main handler"
+    },
+    "LambdaFunctionTimeout": {
+      "Type": "Number",
+      "Description": "Lambda function timeout in seconds",
+      "Default": 300
+    }
+  },
+  "Resources": {
+    "DatadogLambdaKey": {
+      "Type": "AWS::KMS::Key",
+      "Properties": {
+        "Description": "Datadog Lambda API encryption key",
+        "KeyPolicy": {
+          "Version": "2012-10-17",
+          "Id": "datadog-backup-lambda-key",
+          "Statement": [
+            {
+              "Sid": "Allow administration of the key",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Ref": "AWS::AccountId"
+                }
+              },
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:Create*",
+                "kms:Describe*",
+                "kms:Enable*",
+                "kms:List*",
+                "kms:Put*",
+                "kms:Update*",
+                "kms:Revoke*",
+                "kms:Disable*",
+                "kms:Get*",
+                "kms:Delete*",
+                "kms:ScheduleKeyDeletion",
+                "kms:CancelKeyDeletion"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Sid": "Allow use of the key",
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "DatadogLambdaRole",
+                    "Arn"
+                  ]
+                }
+              },
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey*",
+                "kms:DescribeKey"
+              ],
+              "Resource": "*"
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:ListAllMyBuckets"
+              ],
+              "Resource": [
+                "arn:aws:s3:::*"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "LambdaKMSAlias": {
+      "Type": "AWS::KMS::Alias",
+      "Properties": {
+        "AliasName": "alias/datadog-backup-lambda",
+        "TargetKeyId": {
+          "Ref": "DatadogLambdaKey"
+        }
+      }
+    },
+    "DatadogLambdaRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "lambda.amazonaws.com"
+                ]
+              },
+              "Action": [
+                "sts:AssumeRole"
+              ]
+            }
+          ]
+        },
+        "Path": "/",
+        "Policies": [
+          {
+            "PolicyName": "root",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Sid": "AllowAllS3ActionsInBackupFolder",
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:*"
+                  ],
+                  "Resource": [
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:aws:s3:::",
+                          {
+                            "Ref": "JSONBackupBucket"
+                          }
+                        ]
+                      ]
+                    },
+                    {
+                      "Fn::Join": [
+                        "",
+                        [
+                          "arn:aws:s3:::",
+                          {
+                            "Ref": "JSONBackupBucket"
+                          },
+                          "/*"
+                        ]
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "ec2:Describe*",
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "kms:*",
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": "arn:aws:logs:*:*:*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "ScheduledRule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Description": "ScheduledRule",
+        "ScheduleExpression": "cron(30 17 ? * MON-FRI *)",
+        "State": "ENABLED",
+        "Targets": [
+          {
+            "Arn": {
+              "Fn::GetAtt": [
+                "DataDogLambdaFunction",
+                "Arn"
+              ]
+            },
+            "Id": "TargetFunctionV1"
+          }
+        ]
+      }
+    },
+    "PermissionForEventsToInvokeLambda": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "DataDogLambdaFunction"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "ScheduledRule",
+            "Arn"
+          ]
+        }
+      }
+    },
+    "DataDogLambdaFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Handler": {
+          "Ref": "LambdaMainHandler"
+        },
+        "KmsKeyArn": {
+          "Fn::GetAtt": [
+            "DatadogLambdaKey",
+            "Arn"
+          ]
+        },
+        "Role": {
+          "Fn::GetAtt": [
+            "DatadogLambdaRole",
+            "Arn"
+          ]
+        },
+        "Runtime": "python3.6",
+        "Timeout": {
+          "Ref": "LambdaFunctionTimeout"
+        },
+        "Environment": {
+          "Variables": {
+            "ddKeys": {
+              "Ref": "DatadogKey"
+            },
+            "JSONBackupBucket": {
+              "Ref": "JSONBackupBucket"
+            }
+          }
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "SourceBucket"
+          },
+          "S3Key": {
+            "Ref": "LambdaFilename"
+          }
+        }
+      }
+    }
+  }
+}
